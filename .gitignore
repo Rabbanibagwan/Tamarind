@@ -1,38 +1,28 @@
-# dependencies
 node_modules/
-
-# build
 dist/
-build/
-*.tsbuildinfo
-
-# env / secrets
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-credentials.json
-.git-credentials
-
-# tooling / local
-.DS_Store
+.expo/
+apps/mobile/.expo/
+apps/mobile/dist/
+apps/web/dist/
 *.local
-.vite/
-coverage/
-.turbo/
-.cache/
-
-# local DB / backups (IndexedDB is browser-side; keep local dumps out of git)
-*.sqlite
-*.sqlite3
-*.db
-backup*.json
-*-backup.json
-tamarind-backup-*.json
-
-# logs
+.DS_Store
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
+.turbo/
+coverage/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+android/
+ios/
+.env
+.env.*
+!.env.example
+*.apk
+*.aab
+*.ipa

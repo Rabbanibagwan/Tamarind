@@ -15,7 +15,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@tamarind/core": ["../../packages/core/src/index.ts"],
+      "@tamarind/core/*": ["../../packages/core/src/*"]
+    }
   },
   "include": ["src"]
 }

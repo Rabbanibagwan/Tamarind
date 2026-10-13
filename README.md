@@ -2,24 +2,24 @@
 
 Local-first mandi billing for a merchant who intermediates farmers and vendors via auction.
 
-## Stack
+## Monorepo
 
-- Vite + React + TypeScript
-- Dexie (IndexedDB) persistence — offline-capable
-- `decimal.js` for money/weight math
-- Vitest for domain + workflow tests
+| Package | Path | Role |
+| --- | --- | --- |
+| `@tamarind/core` | `packages/core` | Shared domain math, types, `DataStore` API, services, backup |
+| `@tamarind/web` | `apps/web` | Vite + React + Dexie (IndexedDB) — **preserved web app** |
+| `@tamarind/mobile` | `apps/mobile` | Expo + React Native + SQLite — Android-first + iPhone |
 
 ## Commands
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm test
-npm run typecheck
-npm run build
+npm test                 # core + web tests (canonical ₹3640 / ₹4416)
+npm run dev:web          # http://localhost:5173
+npm run dev:mobile       # Expo (scan QR with Expo Go / dev client)
 ```
 
-## Workflow
+## Workflow (same on web + mobile)
 
 1. **Farmers / Vendors** — master data  
 2. **Action Diary** — lots with per-bag weights + weight slip print/reprint  
@@ -29,3 +29,13 @@ npm run build
 6. **Payments / Ledgers / Reports / Settings / Backup**
 
 Suit default: `FLOOR(weight / 20)` per bag, snapshotted onto each lot so Settings changes never rewrite finalized documents.
+
+## Thermal printing (mobile)
+
+- Abstraction: select / status / test / reprint (same document id — no duplicate bills).
+- **Android:** ESC/POS Bluetooth Classic in a **development build** (`npx expo run:android` or EAS). Expo Go cannot load Classic BT modules.
+- **iOS:** Classic SPP generally unavailable; BLE/MFi only. Many mandi printers are Classic-only.
+
+## Isolation
+
+This repository is **Tamarind only**. Do not connect RateBolo, ProTool, LemonMandi, or other remotes here.

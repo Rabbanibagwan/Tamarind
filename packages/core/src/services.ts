@@ -1,9 +1,14 @@
-import { createId } from "../domain/ids";
-import { d, money, mul, pctOf, sub, sumWeights, weight } from "../domain/money";
-import { calculateFarmerPatti } from "../domain/patti";
-import { ruleFromSettings, summarizeBags } from "../domain/suit";
-import { calculateVendorBill } from "../domain/vendorBill";
-import { db, ensureSettings, getSettings, updateSettings } from "./database";
+import { createId } from "./domain/ids";
+import { d, money, mul, pctOf, sub, sumWeights, weight } from "./domain/money";
+import { calculateFarmerPatti } from "./domain/patti";
+import { ruleFromSettings, summarizeBags } from "./domain/suit";
+import { calculateVendorBill } from "./domain/vendorBill";
+import {
+  ensureSettings,
+  getSettings,
+  updateSettings,
+} from "./backup";
+import type { DataStore } from "./store/types";
 import type {
   Auction,
   AuctionAllocation,
@@ -27,6 +32,7 @@ function todayDate(): string {
 /* ---------- Parties ---------- */
 
 export async function upsertParty(
+  store: DataStore,
   table: "farmers" | "vendors",
   input: { id?: string; name: string; phone?: string; village?: string; notes?: string },
 ): Promise<Party> {
@@ -41,31 +47,42 @@ export async function upsertParty(
     updatedAt: ts,
   };
   if (input.id) {
-    const existing = await db[table].get(input.id);
+    const existing = await store.get(table, input.id);
     if (existing) party.createdAt = existing.createdAt;
   }
-  await db[table].put(party);
+  await store.put(table, party);
   return party;
 }
 
-export async function listParties(table: "farmers" | "vendors"): Promise<Party[]> {
-  return db[table].orderBy("name").toArray();
+export async function listParties(
+  store: DataStore,
+  table: "farmers" | "vendors",
+): Promise<Party[]> {
+  const rows = await store.getAll(table);
+  return rows.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function deleteParty(table: "farmers" | "vendors", id: string): Promise<void> {
-  await db[table].delete(id);
+export async function deleteParty(
+  store: DataStore,
+  table: "farmers" | "vendors",
+  id: string,
+): Promise<void> {
+  await store.delete(table, id);
 }
 
 /* ---------- Lots / Action Diary ---------- */
 
-export async function createLot(input: {
-  farmerId: string;
-  date?: string;
-  commodity?: string;
-  bagWeights: number[];
-}): Promise<{ lot: Lot; slip: WeightSlip }> {
-  const settings = await getSettings();
-  const farmer = await db.farmers.get(input.farmerId);
+export async function createLot(
+  store: DataStore,
+  input: {
+    farmerId: string;
+    date?: string;
+    commodity?: string;
+    bagWeights: number[];
+  },
+): Promise<{ lot: Lot; slip: WeightSlip }> {
+  const settings = await getSettings(store);
+  const farmer = await store.get("farmers", input.farmerId);
   if (!farmer) throw new Error("Farmer not found");
   if (!input.bagWeights.length) throw new Error("Add at least one bag weight");
 
@@ -107,10 +124,10 @@ export async function createLot(input: {
   };
   lot.slipId = slip.id;
 
-  await db.transaction("rw", db.lots, db.slips, db.settings, async () => {
-    await db.lots.put(lot);
-    await db.slips.put(slip);
-    await updateSettings({
+  await store.transaction(async () => {
+    await store.put("lots", lot);
+    await store.put("slips", slip);
+    await updateSettings(store, {
       nextLotNumber: lotNumber + 1,
       nextSlipNumber: slipNumber + 1,
     });
@@ -119,40 +136,50 @@ export async function createLot(input: {
   return { lot, slip };
 }
 
-export async function listLots(): Promise<Lot[]> {
-  const lots = await db.lots.toArray();
+export async function listLots(store: DataStore): Promise<Lot[]> {
+  const lots = await store.getAll("lots");
   return lots.sort((a, b) => b.lotNumber - a.lotNumber);
 }
 
-export async function getLot(id: string): Promise<Lot | undefined> {
-  return db.lots.get(id);
+export async function getLot(store: DataStore, id: string): Promise<Lot | undefined> {
+  return store.get("lots", id);
 }
 
-export async function getSlipForLot(lotId: string): Promise<WeightSlip | undefined> {
-  return db.slips.where("lotId").equals(lotId).first();
+export async function getSlipForLot(
+  store: DataStore,
+  lotId: string,
+): Promise<WeightSlip | undefined> {
+  const slips = await store.whereEquals("slips", "lotId", lotId);
+  return slips[0];
 }
 
 /** Reprint only increments print counter — never duplicates the slip row. */
-export async function recordSlipPrint(slipId: string): Promise<WeightSlip> {
-  const slip = await db.slips.get(slipId);
+export async function recordSlipPrint(
+  store: DataStore,
+  slipId: string,
+): Promise<WeightSlip> {
+  const slip = await store.get("slips", slipId);
   if (!slip) throw new Error("Slip not found");
   const next: WeightSlip = {
     ...slip,
     printedCount: slip.printedCount + 1,
     lastPrintedAt: nowIso(),
   };
-  await db.slips.put(next);
+  await store.put("slips", next);
   return next;
 }
 
 /* ---------- Auction ---------- */
 
-export async function createAuction(input: {
-  lotId: string;
-  ratePerKg: number | string;
-  allocations: Array<{ vendorId: string; bagIndices: number[] }>;
-}): Promise<Auction> {
-  const lot = await db.lots.get(input.lotId);
+export async function createAuction(
+  store: DataStore,
+  input: {
+    lotId: string;
+    ratePerKg: number | string;
+    allocations: Array<{ vendorId: string; bagIndices: number[] }>;
+  },
+): Promise<Auction> {
+  const lot = await store.get("lots", input.lotId);
   if (!lot) throw new Error("Lot not found");
   if (lot.status !== "open") throw new Error("Lot already auctioned");
   if (!input.allocations.length) throw new Error("Add at least one vendor allocation");
@@ -161,7 +188,7 @@ export async function createAuction(input: {
   const allocations: AuctionAllocation[] = [];
 
   for (const alloc of input.allocations) {
-    const vendor = await db.vendors.get(alloc.vendorId);
+    const vendor = await store.get("vendors", alloc.vendorId);
     if (!vendor) throw new Error("Vendor not found");
     if (!alloc.bagIndices.length) throw new Error("Allocation needs bags");
     for (const idx of alloc.bagIndices) {
@@ -210,9 +237,9 @@ export async function createAuction(input: {
     createdAt: ts,
   };
 
-  await db.transaction("rw", db.auctions, db.lots, async () => {
-    await db.auctions.put(auction);
-    await db.lots.update(lot.id, {
+  await store.transaction(async () => {
+    await store.put("auctions", auction);
+    await store.update("lots", lot.id, {
       status: "auctioned",
       auctionId: auction.id,
       updatedAt: ts,
@@ -222,41 +249,43 @@ export async function createAuction(input: {
   return auction;
 }
 
-export async function listAuctions(): Promise<Auction[]> {
-  const rows = await db.auctions.toArray();
+export async function listAuctions(store: DataStore): Promise<Auction[]> {
+  const rows = await store.getAll("auctions");
   return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function listOpenLots(): Promise<Lot[]> {
-  return (await db.lots.where("status").equals("open").toArray()).sort(
-    (a, b) => b.lotNumber - a.lotNumber,
-  );
+export async function listOpenLots(store: DataStore): Promise<Lot[]> {
+  const lots = await store.whereEquals("lots", "status", "open");
+  return lots.sort((a, b) => b.lotNumber - a.lotNumber);
 }
 
 /* ---------- Farmer Patti ---------- */
 
-export async function createFarmerPatti(input: {
-  farmerId: string;
-  auctionIds: string[];
-  hamali?: number | string;
-  bhada?: number | string;
-  stationery?: number | string;
-  commissionPercent?: number;
-}): Promise<FarmerPattiDoc> {
-  const settings = await getSettings();
-  const farmer = await db.farmers.get(input.farmerId);
+export async function createFarmerPatti(
+  store: DataStore,
+  input: {
+    farmerId: string;
+    auctionIds: string[];
+    hamali?: number | string;
+    bhada?: number | string;
+    stationery?: number | string;
+    commissionPercent?: number;
+  },
+): Promise<FarmerPattiDoc> {
+  const settings = await getSettings(store);
+  const farmer = await store.get("farmers", input.farmerId);
   if (!farmer) throw new Error("Farmer not found");
   if (!input.auctionIds.length) throw new Error("Select auctions");
 
   const auctions: Auction[] = [];
   for (const id of input.auctionIds) {
-    const a = await db.auctions.get(id);
+    const a = await store.get("auctions", id);
     if (!a) throw new Error("Auction not found");
     if (a.farmerId !== farmer.id) throw new Error("Auction belongs to another farmer");
-    const existing = await db.pattis
-      .filter((p) => p.lines.some((l) => l.auctionId === id))
-      .first();
-    if (existing) throw new Error(`Auction lot #${a.lotNumber} already on a patti`);
+    const existing = await store.filter("pattis", (p) =>
+      p.lines.some((l) => l.auctionId === id),
+    );
+    if (existing[0]) throw new Error(`Auction lot #${a.lotNumber} already on a patti`);
     auctions.push(a);
   }
 
@@ -279,12 +308,10 @@ export async function createFarmerPatti(input: {
     input.hamali !== undefined
       ? money(input.hamali)
       : mul(bagCount, settings.defaultHamaliPerBag);
-  // Bhada once per patti (not per lot)
   const bhada = money(input.bhada ?? settings.defaultBhada);
   const stationery = money(input.stationery ?? settings.defaultStationery);
   const commissionPercent = input.commissionPercent ?? settings.farmerCommissionPercent;
 
-  // Weighted average rate for display calc via aggregate
   const avgRate = d(netWeight).gt(0) ? d(saleAmount).div(d(netWeight)) : d(0);
   const calc = calculateFarmerPatti({
     netWeightKg: netWeight,
@@ -296,7 +323,6 @@ export async function createFarmerPatti(input: {
     suitRuleSnapshot,
   });
 
-  // Prefer summing line sales for saleAmount fidelity
   const commissionAmount = pctOf(saleAmount, commissionPercent);
   const deductionsTotal = money(
     d(commissionAmount).plus(d(hamali)).plus(d(bhada)).plus(d(stationery)),
@@ -344,46 +370,52 @@ export async function createFarmerPatti(input: {
     createdAt: ts,
   };
 
-  await db.transaction("rw", db.pattis, db.lots, db.settings, db.ledger, async () => {
-    await db.pattis.put(doc);
+  await store.transaction(async () => {
+    await store.put("pattis", doc);
     for (const line of lines) {
-      await db.lots.update(line.lotId, { status: "settled", updatedAt: ts });
+      await store.update("lots", line.lotId, { status: "settled", updatedAt: ts });
     }
-    await updateSettings({ nextPattiNumber: pattiNumber + 1 });
-    await db.ledger.put(ledger);
+    await updateSettings(store, { nextPattiNumber: pattiNumber + 1 });
+    await store.put("ledger", ledger);
   });
 
   void calc;
   return doc;
 }
 
-export async function listPattis(): Promise<FarmerPattiDoc[]> {
-  return (await db.pattis.toArray()).sort((a, b) => b.pattiNumber - a.pattiNumber);
+export async function listPattis(store: DataStore): Promise<FarmerPattiDoc[]> {
+  return (await store.getAll("pattis")).sort((a, b) => b.pattiNumber - a.pattiNumber);
 }
 
-export async function unsettledAuctionsForFarmer(farmerId: string): Promise<Auction[]> {
-  const auctions = await db.auctions.where("farmerId").equals(farmerId).toArray();
+export async function unsettledAuctionsForFarmer(
+  store: DataStore,
+  farmerId: string,
+): Promise<Auction[]> {
+  const auctions = await store.whereEquals("auctions", "farmerId", farmerId);
   const result: Auction[] = [];
   for (const a of auctions) {
-    const onPatti = await db.pattis
-      .filter((p) => p.lines.some((l) => l.auctionId === a.id))
-      .first();
-    if (!onPatti) result.push(a);
+    const onPatti = await store.filter("pattis", (p) =>
+      p.lines.some((l) => l.auctionId === a.id),
+    );
+    if (!onPatti[0]) result.push(a);
   }
   return result.sort((a, b) => b.lotNumber - a.lotNumber);
 }
 
 /* ---------- Vendor Bills ---------- */
 
-export async function createVendorBill(input: {
-  vendorId: string;
-  allocationRefs: Array<{ auctionId: string; allocationId: string }>;
-  hamali?: number | string;
-  cess?: number | string;
-  commissionPercent?: number;
-}): Promise<VendorBillDoc> {
-  const settings = await getSettings();
-  const vendor = await db.vendors.get(input.vendorId);
+export async function createVendorBill(
+  store: DataStore,
+  input: {
+    vendorId: string;
+    allocationRefs: Array<{ auctionId: string; allocationId: string }>;
+    hamali?: number | string;
+    cess?: number | string;
+    commissionPercent?: number;
+  },
+): Promise<VendorBillDoc> {
+  const settings = await getSettings(store);
+  const vendor = await store.get("vendors", input.vendorId);
   if (!vendor) throw new Error("Vendor not found");
   if (!input.allocationRefs.length) throw new Error("Select allocations");
 
@@ -391,15 +423,15 @@ export async function createVendorBill(input: {
   let suitRuleSnapshot = ruleFromSettings(settings.suitDivisor);
 
   for (const ref of input.allocationRefs) {
-    const auction = await db.auctions.get(ref.auctionId);
+    const auction = await store.get("auctions", ref.auctionId);
     if (!auction) throw new Error("Auction not found");
     const alloc = auction.allocations.find((a) => a.id === ref.allocationId);
     if (!alloc) throw new Error("Allocation not found");
     if (alloc.vendorId !== vendor.id) throw new Error("Allocation belongs to another vendor");
-    const existing = await db.vendorBills
-      .filter((b) => b.lines.some((l) => l.allocationId === ref.allocationId))
-      .first();
-    if (existing) throw new Error(`Allocation already billed (lot #${auction.lotNumber})`);
+    const existing = await store.filter("vendorBills", (b) =>
+      b.lines.some((l) => l.allocationId === ref.allocationId),
+    );
+    if (existing[0]) throw new Error(`Allocation already billed (lot #${auction.lotNumber})`);
 
     suitRuleSnapshot = auction.suitRuleSnapshot;
     const baseAmount = mul(alloc.netWeight, auction.ratePerKg);
@@ -479,35 +511,33 @@ export async function createVendorBill(input: {
     createdAt: ts,
   };
 
-  await db.transaction("rw", db.vendorBills, db.settings, db.ledger, async () => {
-    await db.vendorBills.put(doc);
-    await updateSettings({ nextVendorBillNumber: billNumber + 1 });
-    await db.ledger.put(ledger);
+  await store.transaction(async () => {
+    await store.put("vendorBills", doc);
+    await updateSettings(store, { nextVendorBillNumber: billNumber + 1 });
+    await store.put("ledger", ledger);
   });
 
   void calc;
   return doc;
 }
 
-export async function listVendorBills(): Promise<VendorBillDoc[]> {
-  return (await db.vendorBills.toArray()).sort((a, b) => b.billNumber - a.billNumber);
+export async function listVendorBills(store: DataStore): Promise<VendorBillDoc[]> {
+  return (await store.getAll("vendorBills")).sort((a, b) => b.billNumber - a.billNumber);
 }
 
-export async function unbilledAllocationsForVendor(vendorId: string): Promise<
-  Array<{
-    auction: Auction;
-    allocation: AuctionAllocation;
-  }>
-> {
-  const auctions = await db.auctions.toArray();
+export async function unbilledAllocationsForVendor(
+  store: DataStore,
+  vendorId: string,
+): Promise<Array<{ auction: Auction; allocation: AuctionAllocation }>> {
+  const auctions = await store.getAll("auctions");
   const result: Array<{ auction: Auction; allocation: AuctionAllocation }> = [];
   for (const auction of auctions) {
     for (const allocation of auction.allocations) {
       if (allocation.vendorId !== vendorId) continue;
-      const billed = await db.vendorBills
-        .filter((b) => b.lines.some((l) => l.allocationId === allocation.id))
-        .first();
-      if (!billed) result.push({ auction, allocation });
+      const billed = await store.filter("vendorBills", (b) =>
+        b.lines.some((l) => l.allocationId === allocation.id),
+      );
+      if (!billed[0]) result.push({ auction, allocation });
     }
   }
   return result.sort((a, b) => b.auction.lotNumber - a.auction.lotNumber);
@@ -515,15 +545,18 @@ export async function unbilledAllocationsForVendor(vendorId: string): Promise<
 
 /* ---------- Payments ---------- */
 
-export async function recordPayment(input: {
-  partyType: "farmer" | "vendor";
-  docType: "patti" | "vendor_bill";
-  docId: string;
-  amount: number | string;
-  mode?: Payment["mode"];
-  note?: string;
-  date?: string;
-}): Promise<Payment> {
+export async function recordPayment(
+  store: DataStore,
+  input: {
+    partyType: "farmer" | "vendor";
+    docType: "patti" | "vendor_bill";
+    docId: string;
+    amount: number | string;
+    mode?: Payment["mode"];
+    note?: string;
+    date?: string;
+  },
+): Promise<Payment> {
   const amount = money(input.amount);
   if (d(amount).lte(0)) throw new Error("Amount must be positive");
 
@@ -533,26 +566,26 @@ export async function recordPayment(input: {
   let docNumber = 0;
 
   if (input.docType === "patti") {
-    const doc = await db.pattis.get(input.docId);
+    const doc = await store.get("pattis", input.docId);
     if (!doc) throw new Error("Patti not found");
     const nextPaid = money(d(doc.paidAmount).plus(d(amount)));
     if (d(nextPaid).gt(d(doc.payable))) throw new Error("Payment exceeds payable balance");
     partyId = doc.farmerId;
     partyName = doc.farmerName;
     docNumber = doc.pattiNumber;
-    await db.pattis.update(doc.id, {
+    await store.update("pattis", doc.id, {
       paidAmount: nextPaid,
       balanceAmount: sub(doc.payable, nextPaid),
     });
   } else {
-    const doc = await db.vendorBills.get(input.docId);
+    const doc = await store.get("vendorBills", input.docId);
     if (!doc) throw new Error("Vendor bill not found");
     const nextPaid = money(d(doc.paidAmount).plus(d(amount)));
     if (d(nextPaid).gt(d(doc.total))) throw new Error("Payment exceeds bill balance");
     partyId = doc.vendorId;
     partyName = doc.vendorName;
     docNumber = doc.billNumber;
-    await db.vendorBills.update(doc.id, {
+    await store.update("vendorBills", doc.id, {
       paidAmount: nextPaid,
       balanceAmount: sub(doc.total, nextPaid),
     });
@@ -589,36 +622,39 @@ export async function recordPayment(input: {
     createdAt: ts,
   };
 
-  await db.payments.put(payment);
-  await db.ledger.put(ledger);
+  await store.put("payments", payment);
+  await store.put("ledger", ledger);
   return payment;
 }
 
-export async function listPayments(): Promise<Payment[]> {
-  return (await db.payments.toArray()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export async function listPayments(store: DataStore): Promise<Payment[]> {
+  return (await store.getAll("payments")).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt),
+  );
 }
 
 export async function ledgerForParty(
+  store: DataStore,
   partyType: "farmer" | "vendor",
   partyId: string,
 ): Promise<LedgerEntry[]> {
-  return (await db.ledger.where("partyId").equals(partyId).toArray())
+  return (await store.whereEquals("ledger", "partyId", partyId))
     .filter((e) => e.partyType === partyType)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /* ---------- Dashboard ---------- */
 
-export async function dashboardStats() {
-  await ensureSettings();
+export async function dashboardStats(store: DataStore) {
+  await ensureSettings(store);
   const [farmers, vendors, lots, auctions, pattis, bills, payments] = await Promise.all([
-    db.farmers.count(),
-    db.vendors.count(),
-    db.lots.toArray(),
-    db.auctions.toArray(),
-    db.pattis.toArray(),
-    db.vendorBills.toArray(),
-    db.payments.toArray(),
+    store.count("farmers"),
+    store.count("vendors"),
+    store.getAll("lots"),
+    store.getAll("auctions"),
+    store.getAll("pattis"),
+    store.getAll("vendorBills"),
+    store.getAll("payments"),
   ]);
   const openLots = lots.filter((l) => l.status === "open").length;
   const today = todayDate();
@@ -649,4 +685,4 @@ export async function dashboardStats() {
   };
 }
 
-export { weight };
+export { weight, getSettings, updateSettings, ensureSettings };

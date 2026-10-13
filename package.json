@@ -2,31 +2,22 @@
   "name": "tamarind-billing",
   "private": true,
   "version": "1.0.0",
-  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 5173",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "dev": "npm run dev -w @tamarind/web",
+    "dev:web": "npm run dev -w @tamarind/web",
+    "dev:mobile": "npm run start -w @tamarind/mobile",
+    "build": "npm run build -w @tamarind/web",
+    "test": "npm run test -w @tamarind/core && npm run test -w @tamarind/web",
+    "test:core": "npm run test -w @tamarind/core",
+    "test:web": "npm run test -w @tamarind/web",
+    "typecheck": "npm run typecheck -w @tamarind/core && npm run typecheck -w @tamarind/web",
+    "lint": "npm run typecheck"
   },
-  "dependencies": {
-    "decimal.js": "^10.5.0",
-    "dexie": "^4.0.11",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.30.0"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "fake-indexeddb": "^6.0.0",
-    "jsdom": "^26.0.0",
-    "typescript": "^5.7.3",
-    "vite": "^6.0.11",
-    "vitest": "^3.0.4"
+  "engines": {
+    "node": ">=20"
   }
 }

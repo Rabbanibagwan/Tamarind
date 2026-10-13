@@ -1,5 +1,5 @@
-import type { SuitRuleSnapshot } from "../domain/suit";
-import type { Money, Weight } from "../domain/money";
+import type { SuitRuleSnapshot } from "./domain/suit";
+import type { Money, Weight } from "./domain/money";
 
 export type Party = {
   id: string;
