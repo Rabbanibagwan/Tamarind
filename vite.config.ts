@@ -7,11 +7,14 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
+    // Allow Cloudflare / other HTTPS tunnel hostnames for iPhone Safari preview
+    allowedHosts: true,
   },
   preview: {
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
+    allowedHosts: true,
   },
   test: {
     environment: "node",
